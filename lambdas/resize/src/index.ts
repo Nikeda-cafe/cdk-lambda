@@ -7,8 +7,11 @@ import {
 import Jimp from "jimp";
 import path from "path";
 import { getImageFromS3, putImageToS3 } from "../../common/src/index.js";
+import { S3Message } from "../../common/src/types";
+import { SendMessageCommand, SendMessageCommandInput, SQSClient } from "@aws-sdk/client-sqs";
 
 const DIRECTORY = 'resize'; // Directory to save resized images
+const QUEUE_URL = process.env.QUEUE_URL || '';
 export const handler: S3Handler = async (event: S3Event) => {
   const s3Client = new S3Client()
 
@@ -35,5 +38,21 @@ export const handler: S3Handler = async (event: S3Event) => {
 
     const uploadKey = `${DIRECTORY}/${parsedKey.name}-resize${parsedKey.ext}`;
     await putImageToS3(s3Client, bucket, uploadKey, imageBuffer);
+
+    //4. send a message to SQS
+    const s3Message: S3Message = { bucketName: bucket, key: uploadKey };
+
+    //sqs client
+    const sqsClient = new SQSClient();
+
+    // sqs command
+    const input: SendMessageCommandInput = {
+      QueueUrl: QUEUE_URL,
+      MessageBody: JSON.stringify(s3Message),
+    }
+    const command: SendMessageCommand = new SendMessageCommand(input);
+    await sqsClient.send(command)
+
+    console.log(`Message sent to SQS for resized message: ${JSON.stringify(s3Message)}`);
   }
 }
