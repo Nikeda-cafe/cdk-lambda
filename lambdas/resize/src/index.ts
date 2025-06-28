@@ -1,4 +1,4 @@
-import { Handler, S3Event, S3Handler } from "aws-lambda";
+import { Handler, S3Event, S3Handler, SQSHandler, SQSEvent } from "aws-lambda";
 import {
   S3Client,
   PutObjectCommand,
@@ -12,47 +12,54 @@ import { SendMessageCommand, SendMessageCommandInput, SQSClient } from "@aws-sdk
 
 const DIRECTORY = 'resize'; // Directory to save resized images
 const QUEUE_URL = process.env.QUEUE_URL || '';
-export const handler: S3Handler = async (event: S3Event) => {
+export const handler: SQSHandler = async (event: SQSEvent) => {
+  console.log(`SQS Received event: ${JSON.stringify(event, null, 2)}`);
   const s3Client = new S3Client()
 
   for (const record of event.Records) {
     // 1. download the file from S3
-    const bucket = record.s3.bucket.name;
-    const key = record.s3.object.key;
+    const message = record.body;
+    const s3Event: S3Event = JSON.parse(message)
 
-    const parsedKey = path.parse(key);
+    for(const s3Record of s3Event.Records) {
+      console.log(`S3 Received event: ${JSON.stringify(s3Event, null, 2)}`);
+      const bucket = s3Record.s3.bucket.name;
+      const key = s3Record.s3.object.key;
 
-    const image = await getImageFromS3(s3Client, bucket, key);
+      const parsedKey = path.parse(key);
 
-    const width = image.getWidth();
-    const height = image.getHeight();
+      const image = await getImageFromS3(s3Client, bucket, key);
 
-    const resizedWidth = Math.floor(width * 0.5);
-    const resizedHeight = Math.floor(height * 0.5);
+      const width = image.getWidth();
+      const height = image.getHeight();
 
-    image.resize(resizedWidth, resizedHeight); // Resize to half the original size
+      const resizedWidth = Math.floor(width * 0.5);
+      const resizedHeight = Math.floor(height * 0.5);
 
-    // 3. upload the file to S3
-    const mime = image.getMIME();
-    const imageBuffer = await image.getBufferAsync(mime);
+      image.resize(resizedWidth, resizedHeight); // Resize to half the original size
 
-    const uploadKey = `${DIRECTORY}/${parsedKey.name}-resize${parsedKey.ext}`;
-    await putImageToS3(s3Client, bucket, uploadKey, imageBuffer);
+      // 3. upload the file to S3
+      const mime = image.getMIME();
+      const imageBuffer = await image.getBufferAsync(mime);
 
-    //4. send a message to SQS
-    const s3Message: S3Message = { bucketName: bucket, key: uploadKey };
+      const uploadKey = `${DIRECTORY}/${parsedKey.name}-resize${parsedKey.ext}`;
+      await putImageToS3(s3Client, bucket, uploadKey, imageBuffer);
 
-    //sqs client
-    const sqsClient = new SQSClient();
+      //4. send a message to SQS
+      const s3Message: S3Message = { bucketName: bucket, key: uploadKey };
 
-    // sqs command
-    const input: SendMessageCommandInput = {
-      QueueUrl: QUEUE_URL,
-      MessageBody: JSON.stringify(s3Message),
+      //sqs client
+      const sqsClient = new SQSClient();
+
+      // sqs command
+      const input: SendMessageCommandInput = {
+        QueueUrl: QUEUE_URL,
+        MessageBody: JSON.stringify(s3Message),
+      }
+      const command: SendMessageCommand = new SendMessageCommand(input);
+      await sqsClient.send(command)
+
+      console.log(`Message sent to SQS for resized message: ${JSON.stringify(s3Message)}`);
     }
-    const command: SendMessageCommand = new SendMessageCommand(input);
-    await sqsClient.send(command)
-
-    console.log(`Message sent to SQS for resized message: ${JSON.stringify(s3Message)}`);
   }
 }
